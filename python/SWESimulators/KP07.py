@@ -41,10 +41,10 @@ class KP07(Simulator.Simulator):
                  cl_ctx, \
                  eta0, Hi, hu0, hv0, \
                  nx, ny, \
-                 dx, dy, dt, \
+                 dx, dy, \
                  g, f=0.0, r=0.0, \
                  t=0.0, \
-                 #dt=None, \
+                 dt=None, \
                  dt_scale=1.0, \
                  theta=1.3, use_rk2=True,
                  coriolis_beta=0.0, \
@@ -129,7 +129,7 @@ class KP07(Simulator.Simulator):
         self.R1 = Common.OpenCLArray2D(self.cl_ctx, nx, ny, ghost_cells_x, ghost_cells_y)
         self.R2 = Common.OpenCLArray2D(self.cl_ctx, nx, ny, ghost_cells_x, ghost_cells_y)
         self.R3 = Common.OpenCLArray2D(self.cl_ctx, nx, ny, ghost_cells_x, ghost_cells_y)
-        self.dt = Common.OpenCLArray2D(self.cl_ctx, nx, ny, ghost_cells_x, ghost_cells_y)
+        self.var_dt = Common.OpenCLArray2D(self.cl_ctx, nx, ny, ghost_cells_x, ghost_cells_y)
         
         #Bathymetry
         self.bathymetry = Common.Bathymetry(self.cl_ctx, self.cl_queue, nx, ny, ghost_cells_x, ghost_cells_y, Hi, boundary_conditions)
@@ -203,9 +203,10 @@ class KP07(Simulator.Simulator):
         return cls(cl_ctx, \
                  eta0, Hi, hu0, hv0, \
                  nx, ny, \
-                 dx, dy, dt, \
+                 dx, dy, \
                  g, f, r, \
                  t=time0, \
+                 dt=dt, \
                  theta=minmodTheta, use_rk2=using_rk2, \
                  coriolis_beta=beta, \
                  y_zero_reference_cell = y_zero_reference_cell, \
@@ -239,7 +240,7 @@ class KP07(Simulator.Simulator):
                         self.R1.data, self.R1.pitch, \
                         self.R2.data, self.R2.pitch, \
                         self.R3.data, self.R3.pitch, \
-                        self.dt.data, \
+                        self.var_dt.data, \
                         self.bathymetry.Bi.data, self.bathymetry.Bi.pitch, \
                         self.wind_stress.type, \
                         self.wind_stress.tau0, self.wind_stress.rho, self.wind_stress.alpha, self.wind_stress.xm, self.wind_stress.Rc, \
@@ -253,7 +254,7 @@ class KP07(Simulator.Simulator):
         num_blocks_y = self.global_size[1]/self.local_size[1];
         num_blocks = num_blocks_x*num_blocks_y
         self.dt_kernel.reduce_dt(self.cl_queue, (self.dt_block_size, 1), (self.dt_block_size, 1), \
-                        self.dt.data, np.int32(num_blocks), 
+                        self.var_dt.data, np.int32(num_blocks), 
                         self.dt_scale, np.float32(max_dt) )
                         
     
@@ -271,7 +272,7 @@ class KP07(Simulator.Simulator):
                         Q3.data, Q3.pitch, \
                         self.bathymetry.Bm.data, self.bathymetry.Bm.pitch, \
                         self.r, \
-                        self.dt.data, \
+                        self.var_dt.data, \
                         np.int32(substep) )
                         
     def boundaryConditionsKernel(self, U1, U2, U3):
@@ -281,13 +282,26 @@ class KP07(Simulator.Simulator):
         """
         Function which steps n timesteps
         """
+
+        # Only update dt if we are using variable/computed dt
+        update_dt = 1
+        if self.dt is not None:
+            update_dt = 0
+            local_dt = np.float32(self.dt)
+
         n = 0
         t_end = np.float32(t_end);
         while (t_end > 0.0):
             if (self.use_rk2):
                 # Substep one
-                self.fluxKernel(1, self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
-                self.findDtKernel(t_end)
+                self.fluxKernel(update_dt, self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
+                if self.dt is not None:
+                    local_dt = np.float32(min(t_end, local_dt))
+                    upload_dt = np.zeros((128), dtype=np.float32)
+                    upload_dt[0] = local_dt
+                    cl.enqueue_copy(self.cl_queue, self.var_dt.data, upload_dt)
+                else:
+                    self.findDtKernel(t_end)
                 self.rungeKuttaKernel(0, self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
                                          self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
                 self.boundaryConditionsKernel(self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
@@ -303,8 +317,14 @@ class KP07(Simulator.Simulator):
                 
                         
             else:
-                self.fluxKernel(1, self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
-                self.findDtKernel(t_end)
+                self.fluxKernel(update_dt, self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
+                if self.dt is not None:
+                    local_dt = np.float32(min(t_end, local_dt))
+                    upload_dt = np.zeros((128), dtype=np.float32)
+                    upload_dt[0] = local_dt
+                    cl.enqueue_copy(self.cl_queue, self.var_dt.data, upload_dt)
+                else:
+                    self.findDtKernel(t_end)
                 self.rungeKuttaKernel(0, self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
                                          self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
                 self.boundaryConditionsKernel(self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
@@ -312,11 +332,15 @@ class KP07(Simulator.Simulator):
                 # Swap h0 and h1  
                 self.cl_data.swap()
             
-            local_dt = np.zeros((128), dtype=np.float32)
-            cl.enqueue_copy(self.cl_queue, local_dt, self.dt.data)
-            t_end = t_end - local_dt[0];
-            self.t += np.float32(local_dt[0]);
-            #print(local_dt[0]);
+            if self.dt is not None:
+                t_end = t_end - local_dt;
+                self.t += np.float32(local_dt);
+            else:
+                local_dt = np.zeros((128), dtype=np.float32)
+                cl.enqueue_copy(self.cl_queue, local_dt, self.var_dt.data)
+                t_end = t_end - local_dt[0];
+                self.t += np.float32(local_dt[0]);
+                #print(local_dt[0]);
             n = n + 1;
             
             
