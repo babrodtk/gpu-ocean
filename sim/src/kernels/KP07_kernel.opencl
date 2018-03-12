@@ -154,10 +154,10 @@ float computeDt(const float3 Qp, const float3 Qm, float H, const float g_, const
 float computeFluxF(__local float Q[3][block_height+4][block_width+4],
                   __local float Qx[3][block_height+2][block_width+2],
                   __local float F[3][block_height+1][block_width+1],
-				  __local float RHx[block_height+4][block_width+4],
+                  __local float RHx[block_height+4][block_width+4],
                   const float g_, const float dx_) {
 
-	float dt = FLT_MAX;
+    float dt = FLT_MAX;
 
     //Index of thread within block
     const int tx = get_local_id(0);
@@ -193,11 +193,11 @@ float computeFluxF(__local float Q[3][block_height+4][block_width+4],
 float computeFluxG(__local float Q[3][block_height+4][block_width+4],
                   __local float Qy[3][block_height+2][block_width+2],
                   __local float G[3][block_height+1][block_width+1],
-				  __local float RHy[block_height+4][block_width+4],
-				  const float g_, const float dy_) {
-	float dt = FLT_MAX;
+                  __local float RHy[block_height+4][block_width+4],
+                  const float g_, const float dy_) {
+    float dt = FLT_MAX;
 
-	//Index of thread within block
+    //Index of thread within block
     const int tx = get_local_id(0);
     const int ty = get_local_id(1);
     
@@ -419,7 +419,7 @@ __kernel void swe_2D(
     __local float  Hi[block_height+4][block_width+4];
     __local float RHx[block_height+4][block_width+4];
     __local float RHy[block_height+4][block_width+4];
-       
+    
     //Read Q = [eta, hu, hv] into shared memory
     readBlock2(U1_ptr_, U1_pitch_,
                U2_ptr_, U2_pitch_,
@@ -499,11 +499,9 @@ __kernel void swe_2D(
         R3_row[ti] = - (F[2][ty  ][tx+1] - F[2][ty][tx]) / dx_
                      - (G[2][ty+1][tx  ] - G[2][ty][tx]) / dy_
                      + (Y - coriolis_f*Q[1][j][i] - ST3/dy_);
-    }
-    else {
+    } else {
         dt = FLT_MAX;
     }
-
 
     // Find maximum dt (use Q as local memory for reduction)
     if (write_dt_ == 1) {

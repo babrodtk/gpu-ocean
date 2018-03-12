@@ -33,9 +33,6 @@ import Common, SimWriter, SimReader
 import Simulator
 
 class KP07(Simulator.Simulator):
-    """
-    Class that solves the SW equations using the Forward-Backward linear scheme
-    """
 
     def __init__(self, \
                  cl_ctx, \
@@ -49,6 +46,7 @@ class KP07(Simulator.Simulator):
                  theta=1.3, use_rk2=True,
                  coriolis_beta=0.0, \
                  y_zero_reference_cell = 0, \
+                 dt_scale=1.0, \
                  wind_stress=Common.WindStressParams(), \
                  boundary_conditions=Common.BoundaryConditions(), \
                  write_netcdf=False, \
@@ -79,7 +77,8 @@ class KP07(Simulator.Simulator):
         boundary_conditions: Boundary condition object
         write_netcdf: Write the results after each superstep to a netCDF file
         """
-       
+                 
+        
         ## After changing from (h, B) to (eta, H), several of the simulator settings used are wrong. This check will help detect that.
         if ( np.sum(eta0 - Hi[:-1, :-1] > 0) > nx):
             assert(False), "It seems you are using water depth/elevation h and bottom topography B, while you should use water level eta and equillibrium depth H."
@@ -103,6 +102,7 @@ class KP07(Simulator.Simulator):
         self.dt_block_size = dt_block_size
         self.use_rk2 = use_rk2
         rk_order = np.int32(use_rk2 + 1)
+
         super(KP07, self).__init__(cl_ctx, \
                                    nx, ny, \
                                    ghost_cells_x, \
@@ -134,6 +134,35 @@ class KP07(Simulator.Simulator):
         #Bathymetry
         self.bathymetry = Common.Bathymetry(self.cl_ctx, self.cl_queue, nx, ny, ghost_cells_x, ghost_cells_y, Hi, boundary_conditions)
         
+        #Save input parameters
+        #Notice that we need to specify them in the correct dataformat for the
+        #OpenCL kernel
+        self.nx = np.int32(nx)
+        self.ny = np.int32(ny)
+        self.dx = np.float32(dx)
+        self.dy = np.float32(dy)
+        self.g = np.float32(g)
+        self.f = np.float32(f)
+        self.r = np.float32(r)
+        self.theta = np.float32(theta)
+        self.use_rk2 = use_rk2
+        self.coriolis_beta = np.float32(coriolis_beta)
+        self.dt_scale = np.float32(dt_scale)
+        self.y_zero_reference = np.int32(y_zero_reference_cell)
+        self.rk_order = np.int32(use_rk2 + 1)
+        self.wind_stress = wind_stress
+        
+        #Initialize time
+        self.t = np.float32(0.0)
+        
+        #Compute kernel launch parameters
+        self.local_size = (block_width, block_height) 
+        self.global_size = ( \
+                       int(np.ceil(self.nx / float(self.local_size[0])) * self.local_size[0]), \
+                       int(np.ceil(self.ny / float(self.local_size[1])) * self.local_size[1]) \
+                      ) 
+        self.dt_block_size = dt_block_size
+        
         self.bc_kernel = Common.BoundaryConditionsArakawaA(self.cl_ctx, \
                                                            self.nx, \
                                                            self.ny, \
@@ -144,6 +173,10 @@ class KP07(Simulator.Simulator):
         if self.write_netcdf:
             self.sim_writer = SimWriter.SimNetCDFWriter(self, ignore_ghostcells=self.ignore_ghostcells, \
                                     offset_x=self.offset_x, offset_y=self.offset_y)
+
+        self.bc_kernel.boundaryCondition(self.cl_queue, \
+                self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
+
             
         self.bc_kernel.boundaryCondition(self.cl_queue, \
                 self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
@@ -295,6 +328,7 @@ class KP07(Simulator.Simulator):
             if (self.use_rk2):
                 # Substep one
                 self.fluxKernel(update_dt, self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
+                
                 if self.dt is not None:
                     local_dt = np.float32(min(t_end, local_dt))
                     upload_dt = np.zeros((128), dtype=np.float32)
@@ -302,6 +336,7 @@ class KP07(Simulator.Simulator):
                     cl.enqueue_copy(self.cl_queue, self.var_dt.data, upload_dt)
                 else:
                     self.findDtKernel(t_end)
+                    
                 self.rungeKuttaKernel(0, self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
                                          self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
                 self.boundaryConditionsKernel(self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
@@ -318,6 +353,7 @@ class KP07(Simulator.Simulator):
                         
             else:
                 self.fluxKernel(update_dt, self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
+                
                 if self.dt is not None:
                     local_dt = np.float32(min(t_end, local_dt))
                     upload_dt = np.zeros((128), dtype=np.float32)
@@ -325,6 +361,7 @@ class KP07(Simulator.Simulator):
                     cl.enqueue_copy(self.cl_queue, self.var_dt.data, upload_dt)
                 else:
                     self.findDtKernel(t_end)
+                    
                 self.rungeKuttaKernel(0, self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
                                          self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
                 self.boundaryConditionsKernel(self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
@@ -341,6 +378,7 @@ class KP07(Simulator.Simulator):
                 t_end = t_end - local_dt[0];
                 self.t += np.float32(local_dt[0]);
                 #print(local_dt[0]);
+
             n = n + 1;
             
             
