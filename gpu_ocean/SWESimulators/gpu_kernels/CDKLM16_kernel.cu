@@ -83,7 +83,7 @@ float3 computeFFaceFlux(const int i, const int j, const int bx, const int nx_,
                 float Qx[3][block_height+2][block_width+2],
                 float Hi[block_height+1][block_width+1],
                 const float g_, const float coriolis_f, const float dx_,
-                const int wall_bc_) {
+                const int& bc_east_, const int& bc_west_) {
     const int l = j + 2; //Skip ghost cells (be consistent with reconstruction offsets)
     const int k = i + 1;
 
@@ -107,9 +107,9 @@ float3 computeFFaceFlux(const int i, const int j, const int bx, const int nx_,
     const float Kx_m = Qx[2][j][i  ];
     
     // Fix west boundary for reconstruction of eta (corresponding to Kx)
-    if ((wall_bc_ & 0x08) && (bx + i + 2 == 2    )) { vm = -vm; }
+    if ((bc_west_ == 1) && (bx + i + 2 == 2    )) { vm = -vm; }
     // Fix east boundary for reconstruction of eta (corresponding to Kx)
-    if ((wall_bc_ & 0x02) && (bx + i + 2 == nx_+2)) { vp = -vp; }
+    if ((bc_east_ == 1) && (bx + i + 2 == nx_+2)) { vp = -vp; }
     
     // Reconstruct h
     const float hp = eta_bar_p + H_face - (Kx_p + dx_*coriolis_f*vp)/(2.0f*g_);
@@ -132,7 +132,7 @@ float3 computeGFaceFlux(const int i, const int j, const int by, const int ny_,
                 float Qy[3][block_height+2][block_width+2],
                 float Hi[block_height+1][block_width+1],
                 const float g_, const float coriolis_fm, const float coriolis_fp, const float dy_,
-                const int wall_bc_) {
+                const int& bc_north_, const int& bc_south_) {
     const int l = j + 1;
     const int k = i + 2; //Skip ghost cells
     // Q at interface from the right and left
@@ -155,9 +155,9 @@ float3 computeGFaceFlux(const int i, const int j, const int by, const int ny_,
     const float Ly_m = Qy[2][j  ][i];
 
     // Fix south boundary for reconstruction of eta (corresponding to Ly)
-    if ((wall_bc_ & 0x04) && (by + j + 2 == 2    )) { um = -um; }
+    if ((bc_south_ == 1) && (by + j + 2 == 2    )) { um = -um; }
     // Fix north boundary for reconstruction of eta (corresponding to Ly)
-    if ((wall_bc_ & 0x01) && (by + j + 2 == ny_+2)) { up = -up; }
+    if ((bc_north_ == 1) && (by + j + 2 == ny_+2)) { up = -up; }
     
     // Reconstruct h
     const float hp = eta_bar_p + H_face - ( Ly_p - dy_*coriolis_fp*up)/(2.0f*g_);
@@ -172,6 +172,61 @@ float3 computeGFaceFlux(const int i, const int j, const int by, const int ny_,
     // Note that we swap back u and v
     const float3 flux = CDKLM16_flux(Qm, Qp, g_);
     return make_float3(flux.x, flux.z, flux.y);
+}
+
+
+__device__ 
+void handleWallBC(
+                const int& nx_, const int& ny_,
+                const int& ti_, const int& tj_, 
+                const int& tx_, const int& ty_, 
+                const int& bc_north_, const int& bc_south_,
+                const int& bc_east_, const int& bc_west_,
+                float R[3][block_height+4][block_width+4]) {
+    const int wall_bc = 1;
+
+    const int i = tx_ + 2; //Skip local ghost cells, i.e., +2
+    const int j = ty_ + 2;
+        
+    if (bc_north_ == wall_bc && tj_ == ny_+1) {
+        R[0][j+1][i] =  R[0][j][i];
+        R[1][j+1][i] =  R[1][j][i];
+        R[2][j+1][i] = -R[2][j][i];
+
+        R[0][j+2][i] =  R[0][j-1][i];
+        R[1][j+2][i] =  R[1][j-1][i];
+        R[2][j+2][i] = -R[2][j-1][i];
+    }
+    
+    if (bc_south_ == wall_bc && tj_ == 2) {
+        R[0][j-1][i] =  R[0][j][i];
+        R[1][j-1][i] =  R[1][j][i];
+        R[2][j-1][i] = -R[2][j][i];
+
+        R[0][j-2][i] =  R[0][j+1][i];
+        R[1][j-2][i] =  R[1][j+1][i];
+        R[2][j-2][i] = -R[2][j+1][i];
+    }
+    
+    if (bc_east_ == wall_bc && ti_ == nx_+1) {
+        R[0][j][i+1] =  R[0][j][i];
+        R[1][j][i+1] = -R[1][j][i];
+        R[2][j][i+1] =  R[2][j][i];
+
+        R[0][j][i+2] =  R[0][j][i-1];
+        R[1][j][i+2] = -R[1][j][i-1];
+        R[2][j][i+2] =  R[2][j][i-1];
+    }
+    
+    if (bc_west_ == wall_bc && ti_ == 2) {
+        R[0][j][i-1] =  R[0][j][i];
+        R[1][j][i-1] = -R[1][j][i];
+        R[2][j][i-1] =  R[2][j][i];
+
+        R[0][j][i-2] =  R[0][j][i+1];
+        R[1][j][i-2] = -R[1][j][i+1];
+        R[2][j][i-2] =  R[2][j][i+1];
+    }
 }
 
 
@@ -212,7 +267,7 @@ __global__ void cdklm_swe_2D(
 
         // Boundary conditions (1: wall, 2: periodic, 3: open boundary (flow relaxation scheme))
         // Note: these are packed north, east, south, west boolean bits into an int
-        const int wall_bc_) {
+        const int boundary_conditions_) {
 
 
     //Index of thread within block
@@ -295,55 +350,20 @@ __global__ void cdklm_swe_2D(
 
 
     //Fix boundary conditions
-    if (wall_bc_ != 0) {
+    //This must match code in CDKLM16.py:callKernel(...)
+    const int bc_north = (boundary_conditions_ >> 24) & 0xFF;
+    const int bc_south = (boundary_conditions_ >> 16) & 0xFF;
+    const int bc_east = (boundary_conditions_ >> 8) & 0xFF;
+    const int bc_west = (boundary_conditions_ >> 0) & 0xFF;
+    
+    if (boundary_conditions_ > 0) {
         // These boundary conditions are dealt with inside shared memory
-
-        const int i = tx + 2; //Skip local ghost cells, i.e., +2
-        const int j = ty + 2;
-
-        // Wall boundary on north
-        if (tj == ny_+1 && (wall_bc_ & 0x01)) {
-            R[0][j+1][i] =  R[0][j][i];
-            R[1][j+1][i] =  R[1][j][i];
-            R[2][j+1][i] = -R[2][j][i];
-
-            R[0][j+2][i] =  R[0][j-1][i];
-            R[1][j+2][i] =  R[1][j-1][i];
-            R[2][j+2][i] = -R[2][j-1][i];
-        }
-        
-        // Wall boundary on east
-        if (ti == nx_+1 && (wall_bc_ & 0x02)) {
-            R[0][j][i+1] =  R[0][j][i];
-            R[1][j][i+1] = -R[1][j][i];
-            R[2][j][i+1] =  R[2][j][i];
-
-            R[0][j][i+2] =  R[0][j][i-1];
-            R[1][j][i+2] = -R[1][j][i-1];
-            R[2][j][i+2] =  R[2][j][i-1];
-        }
-        
-        // Wall boundary on south
-        if (tj == 2 && (wall_bc_ & 0x04)) {
-            R[0][j-1][i] =  R[0][j][i];
-            R[1][j-1][i] =  R[1][j][i];
-            R[2][j-1][i] = -R[2][j][i];
-
-            R[0][j-2][i] =  R[0][j+1][i];
-            R[1][j-2][i] =  R[1][j+1][i];
-            R[2][j-2][i] = -R[2][j+1][i];
-        }
-        
-        // Wall boundary on west
-        if (ti == 2 && (wall_bc_ & 0x08)) {
-            R[0][j][i-1] =  R[0][j][i];
-            R[1][j][i-1] = -R[1][j][i];
-            R[2][j][i-1] =  R[2][j][i];
-
-            R[0][j][i-2] =  R[0][j][i+1];
-            R[1][j][i-2] = -R[1][j][i+1];
-            R[2][j][i-2] =  R[2][j][i+1];
-        }
+        handleWallBC(nx_, ny_,
+                ti, tj,
+                tx, ty,
+                bc_north, bc_south,
+                bc_east, bc_west,
+                R);
     }
 
     __syncthreads();
@@ -401,12 +421,12 @@ __global__ void cdklm_swe_2D(
             // Enforce wall boundary conditions for Kx:
             int global_thread_id_x = bx + i + 1; // index including ghost cells'
             // Western BC
-            if (wall_bc_ & 0x08) {
+            if (bc_west == 1) {
                 if (global_thread_id_x < 3    ) { left_v   = -left_v;   }
                 if (global_thread_id_x < 2    ) { center_v = -center_v; }
             }
             // Eastern BC
-            if (wall_bc_ & 0x02) {
+            if (bc_east == 1) {
                 if (global_thread_id_x > nx_  ) { right_v  = -right_v;  }
                 if (global_thread_id_x > nx_+1) { center_v = -center_v; }
             }
@@ -428,8 +448,8 @@ __global__ void cdklm_swe_2D(
     __syncthreads();
     
     // Compute flux along x axis
-    float3 flux_diff = (  computeFFaceFlux(tx+1, ty, bx, nx_, R, Qx, Hi,g_, coriolis_f_central, dx_, wall_bc_) 
-                        - computeFFaceFlux(tx  , ty, bx, nx_, R, Qx, Hi,g_, coriolis_f_central, dx_, wall_bc_)) / dx_;
+    float3 flux_diff = (  computeFFaceFlux(tx+1, ty, bx, nx_, R, Qx, Hi,g_, coriolis_f_central, dx_, bc_north, bc_south) 
+                        - computeFFaceFlux(tx  , ty, bx, nx_, R, Qx, Hi,g_, coriolis_f_central, dx_, bc_north, bc_south)) / dx_;
     __syncthreads();
 
     //Reconstruct slopes along y axis
@@ -460,12 +480,12 @@ __global__ void cdklm_swe_2D(
             // Enforce wall boundary conditions for Ly
             int global_thread_id_y = by + j + 1; // index including ghost cells
             // southern BC
-            if (wall_bc_ & 0x04) {
+            if (bc_south == 1) {
                 if (global_thread_id_y < 3    ) { lower_u  = -lower_u;  }
                 if (global_thread_id_y < 2    ) { center_u = -center_u; }
             }
             // northern BC
-            if (wall_bc_ & 0x01) {
+            if (bc_north == 1) {
                 if (global_thread_id_y > ny_  ) { upper_u  = -upper_u;  }
                 if (global_thread_id_y > ny_+1) { center_u = -center_u; }
             }
@@ -492,8 +512,8 @@ __global__ void cdklm_swe_2D(
     __syncthreads();
 
     //Compute fluxes along the y axis    
-    flux_diff = flux_diff + (  computeGFaceFlux(tx, ty+1, by, ny_, R, Qx, Hi, g_, coriolis_f_central,   coriolis_f_upper, dy_, wall_bc_)
-                             - computeGFaceFlux(tx, ty  , by, ny_, R, Qx, Hi, g_,   coriolis_f_lower, coriolis_f_central, dy_, wall_bc_)) / dy_;
+    flux_diff = flux_diff + (  computeGFaceFlux(tx, ty+1, by, ny_, R, Qx, Hi, g_, coriolis_f_central,   coriolis_f_upper, dy_, bc_east, bc_west)
+                             - computeGFaceFlux(tx, ty  , by, ny_, R, Qx, Hi, g_,   coriolis_f_lower, coriolis_f_central, dy_, bc_east, bc_west)) / dy_;
     __syncthreads();
 
 

@@ -214,6 +214,9 @@ class Simulator(object):
         self.logger.debug("Interpolation t is %f", wind_stress_t)
         
         return wind_stress_t
+        
+        
+        
             
     @abstractmethod
     def step(self, t_end=0.0):

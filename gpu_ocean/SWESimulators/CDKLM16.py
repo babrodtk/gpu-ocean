@@ -57,6 +57,7 @@ class CDKLM16(Simulator.Simulator):
                  max_wind_direction_perturbation = 0, \
                  wind_stress=WindStress.WindStress(), \
                  boundary_conditions=Common.BoundaryConditions(), \
+                 boundary_conditions_data=Common.BoundaryConditionsData(), \
                  small_scale_perturbation=False, \
                  small_scale_perturbation_amplitude=None, \
                  small_scale_perturbation_interpolation_factor = 1, \
@@ -224,6 +225,7 @@ class CDKLM16(Simulator.Simulator):
                                                            ghost_cells_x, \
                                                            ghost_cells_y, \
                                                            self.boundary_conditions, \
+                                                           boundary_conditions_data, \
         )
 
         # Small scale perturbation:
@@ -372,6 +374,7 @@ class CDKLM16(Simulator.Simulator):
         n = int(t_end / self.dt + 1)
 
         if self.t == 0:
+            self.bc_kernel.update_bc_values(self.gpu_stream, self.t)
             self.bc_kernel.boundaryCondition(self.gpu_stream, \
                                              self.gpu_data.h0, self.gpu_data.hu0, self.gpu_data.hv0)
         
@@ -393,6 +396,7 @@ class CDKLM16(Simulator.Simulator):
                 break
             
             wind_stress_t = np.float32(self.update_wind_stress(self.kernel, self.cdklm_swe_2D))
+            self.bc_kernel.update_bc_values(self.gpu_stream, self.t)
 
             #self.bc_kernel.boundaryCondition(self.cl_queue, \
             #            self.gpu_data.h1, self.gpu_data.hu1, self.gpu_data.hv1)
@@ -475,17 +479,13 @@ class CDKLM16(Simulator.Simulator):
                    h_out, hu_out, hv_out, \
                    local_dt, wind_stress_t, rk_step):
             
-        #"Beautify" code a bit by packing four bools into a single int
+        #"Beautify" code a bit by packing four int8s into a single int32
         #Note: Must match code in kernel!
         boundary_conditions = np.int32(0)
-        if (self.boundary_conditions.north == 1):
-            boundary_conditions = boundary_conditions | 0x01
-        if (self.boundary_conditions.east == 1):
-            boundary_conditions = boundary_conditions | 0x02
-        if (self.boundary_conditions.south == 1):
-            boundary_conditions = boundary_conditions | 0x04
-        if (self.boundary_conditions.west == 1):
-            boundary_conditions = boundary_conditions | 0x08
+        boundary_conditions = boundary_conditions | np.int8(self.boundary_conditions.north) << 24
+        boundary_conditions = boundary_conditions | np.int8(self.boundary_conditions.south) << 16
+        boundary_conditions = boundary_conditions | np.int8(self.boundary_conditions.east) << 8
+        boundary_conditions = boundary_conditions | np.int8(self.boundary_conditions.west) << 0
             
         self.cdklm_swe_2D.prepared_async_call(self.global_size, self.local_size, self.gpu_stream, \
                            self.nx, self.ny, \
