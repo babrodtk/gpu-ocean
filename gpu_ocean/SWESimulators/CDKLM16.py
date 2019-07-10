@@ -50,6 +50,7 @@ class CDKLM16(Simulator.Simulator):
                  nx, ny, \
                  dx, dy, dt, \
                  g, f, r, \
+                 angle=None, \
                  t=0.0, \
                  theta=1.3, rk_order=2, \
                  coriolis_beta=0.0, \
@@ -84,6 +85,7 @@ class CDKLM16(Simulator.Simulator):
         g: Gravitational accelleration (9.81 m/s^2)
         f: Coriolis parameter (1.2e-4 s^1), effectively as f = f + beta*y
         r: Bottom friction coefficient (2.4e-3 m/s)
+        angle: Angle of rotation from North to y-axis
         t: Start simulation at time t
         theta: MINMOD theta used the reconstructions of the derivatives in the numerical scheme
         rk_order: Order of Runge Kutta method {1,2*,3}
@@ -126,6 +128,10 @@ class CDKLM16(Simulator.Simulator):
             nx = nx + boundary_conditions.spongeCells[1] + boundary_conditions.spongeCells[3] - 2*ghost_cells_x
             ny = ny + boundary_conditions.spongeCells[0] + boundary_conditions.spongeCells[2] - 2*ghost_cells_y
             y_zero_reference_cell = boundary_conditions.spongeCells[2] + y_zero_reference_cell
+            
+        #Compensate f for reference cell
+        f = f - coriolis_beta * y_zero_reference_cell * dy
+        y_zero_reference_cell = 0
         
         A = None
         self.max_wind_direction_perturbation = max_wind_direction_perturbation
@@ -174,7 +180,7 @@ class CDKLM16(Simulator.Simulator):
         
         # Get CUDA functions and define data types for prepared_{async_}call()
         self.cdklm_swe_2D = self.kernel.get_function("cdklm_swe_2D")
-        self.cdklm_swe_2D.prepare("iifffffffffiiPiPiPiPiPiPiPiPifi")
+        self.cdklm_swe_2D.prepare("iiffffffffiiPiPiPiPiPiPiPiPifi")
         self.update_wind_stress(self.kernel, self.cdklm_swe_2D)
         
         # CUDA functions for finding max time step size:
@@ -253,6 +259,19 @@ class CDKLM16(Simulator.Simulator):
         if self.write_netcdf:
             self.sim_writer = SimWriter.SimNetCDFWriter(self, filename=netcdf_filename, ignore_ghostcells=self.ignore_ghostcells, \
                                     offset_x=self.offset_x, offset_y=self.offset_y)
+                                    
+                                    
+        #Upload data to GPU and bind to texture reference
+        if (angle is None):
+            angle = np.array([[0]], dtype=np.float32)
+        self.angle_texref = self.kernel.get_texref("angle_tex")
+        self.angle_texref.set_array(cuda.np_to_array(np.ascontiguousarray(angle), order="C"))
+                    
+        # Set texture parameters
+        self.angle_texref.set_filter_mode(cuda.filter_mode.LINEAR) #bilinear interpolation
+        self.angle_texref.set_address_mode(0, cuda.address_mode.CLAMP) #no indexing outside domain
+        self.angle_texref.set_address_mode(1, cuda.address_mode.CLAMP)
+        self.angle_texref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES) #Use [0, 1] indexing
 
     
     def cleanUp(self):
@@ -494,7 +513,6 @@ class CDKLM16(Simulator.Simulator):
                            self.theta, \
                            self.f, \
                            self.coriolis_beta, \
-                           self.y_zero_reference_cell, \
                            self.r, \
                            self.rk_order, \
                            np.int32(rk_step), \
@@ -624,8 +642,17 @@ class CDKLM16(Simulator.Simulator):
         
         return courant_number*max_dt    
     
-    def downloadBathymetry(self):
-        return self.bathymetry.download(self.gpu_stream)
+    def downloadBathymetry(self, interior_domain_only=False):
+        if interior_domain_only:
+            Bi, Bm = self.bathymetry.download(self.gpu_stream)
+            return [
+                    Bi[self.interior_domain_indices[2]:self.interior_domain_indices[0]+1,  
+                       self.interior_domain_indices[3]:self.interior_domain_indices[1]]+1, 
+                    Bm[self.interior_domain_indices[2]:self.interior_domain_indices[0],  
+                       self.interior_domain_indices[3]:self.interior_domain_indices[1]]
+                   ]
+        else:
+            return self.bathymetry.download(self.gpu_stream)
     
     def downloadDt(self):
         return self.device_dt.download(self.gpu_stream)

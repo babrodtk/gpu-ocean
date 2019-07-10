@@ -861,15 +861,20 @@ class BoundaryConditionsArakawaA:
             h = data.h[t_index]
             hu = data.hu[t_index]
             hv = data.hv[t_index]
+            
+            h = np.squeeze(h)
+            hu = np.squeeze(hu)
+            hv = np.squeeze(hv)
             zeros = np.zeros_like(h)
-
-            assert(h.shape[0] == 1), "NS-data must be one row"
-            nx = h.shape[1]
+            assert(len(h.shape) == 1), "NS-data must be one row"
+            nx = h.shape[0]
+            
             components = 4
             NS_data = np.vstack((h, hu, hv, zeros))
             NS_data = np.transpose(NS_data);
             NS_data = np.reshape(NS_data, (1, nx, components))
             NS_data = np.ascontiguousarray(NS_data)
+            #print(NS_data)
             
             return NS_data
             
@@ -877,12 +882,17 @@ class BoundaryConditionsArakawaA:
             h = data.h[t_index]
             hu = data.hu[t_index]
             hv = data.hv[t_index]
+            
+            h = np.squeeze(h)
+            hu = np.squeeze(hu)
+            hv = np.squeeze(hv)
             zeros = np.zeros_like(h)
-
+            assert(len(h.shape) == 1), "EW-data must be one column"
             ny = h.shape[0]
-            assert(h.shape[1] == 1), "EW-data must be one column"
+            
             components = 4
-            EW_data = np.hstack((h, hu, hv, zeros))
+            EW_data = np.vstack((h, hu, hv, zeros))
+            EW_data = np.transpose(EW_data);
             EW_data = np.reshape(EW_data, (ny, 1, components))
             EW_data = np.ascontiguousarray(EW_data)
             

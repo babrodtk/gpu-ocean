@@ -112,6 +112,7 @@ float3 computeFFaceFlux(const int i, const int j, const int bx, const int nx_,
     if ((bc_east_ == 1) && (bx + i + 2 == nx_+2)) { vp = -vp; }
     
     // Reconstruct h
+    //FIXME: CORIOLIS
     const float hp = eta_bar_p + H_face - (Kx_p + dx_*coriolis_f*vp)/(2.0f*g_);
     const float hm = eta_bar_m + H_face + (Kx_m + dx_*coriolis_f*vm)/(2.0f*g_);
 
@@ -160,6 +161,7 @@ float3 computeGFaceFlux(const int i, const int j, const int by, const int ny_,
     if ((bc_north_ == 1) && (by + j + 2 == ny_+2)) { up = -up; }
     
     // Reconstruct h
+    //FIXME: CORIOLIS
     const float hp = eta_bar_p + H_face - ( Ly_p - dy_*coriolis_fp*up)/(2.0f*g_);
     const float hm = eta_bar_m + H_face + ( Ly_m - dy_*coriolis_fm*um)/(2.0f*g_);
 
@@ -230,6 +232,7 @@ void handleWallBC(
 }
 
 
+texture<float, cudaTextureType2D> angle_tex;
 
 extern "C" {
 __global__ void cdklm_swe_2D(
@@ -241,7 +244,6 @@ __global__ void cdklm_swe_2D(
 
         const float f_, //< Coriolis coefficient
         const float beta_, //< Coriolis force f_ + beta_*(y-y0)
-        const float y_zero_reference_cell_,  // the cell row representing y0 (y0=0 represent southernmost ghost cell)
 
         const float r_, //< Bottom friction coefficient
 
@@ -281,6 +283,10 @@ __global__ void cdklm_swe_2D(
     //Index of cell within domain
     const int ti = blockIdx.x * blockDim.x + threadIdx.x + 2; //Skip global ghost cells, i.e., +2
     const int tj = blockIdx.y * blockDim.y + threadIdx.y + 2;
+    
+    const float s = ti / (float) nx_;
+    const float t = tj / (float) ny_;
+    const float angle = tex2D(angle_tex, s, t);
 
     // Our physical variables
     // Input is [eta, hu, hv]
@@ -343,9 +349,10 @@ __global__ void cdklm_swe_2D(
     
     //Compute Coriolis terms needed for fluxes etc.
     // Global id should be including the 
-    const float coriolis_f_lower   = f_ + beta_ * ((by+ty+2)-y_zero_reference_cell_ - 1.0f + 0.5f)*dy_;
-    const float coriolis_f_central = f_ + beta_ * ((by+ty+2)-y_zero_reference_cell_ +        0.5f)*dy_;
-    const float coriolis_f_upper   = f_ + beta_ * ((by+ty+2)-y_zero_reference_cell_ + 1.0f + 0.5f)*dy_;
+    //FIXME CORIOLIS beta plane here
+    const float coriolis_f_lower   = f_ + beta_ * ((by+ty+2) - 1.0f + 0.5f)*dy_;
+    const float coriolis_f_central = f_ + beta_ * ((by+ty+2) +        0.5f)*dy_;
+    const float coriolis_f_upper   = f_ + beta_ * ((by+ty+2) + 1.0f + 0.5f)*dy_;
 
 
 
@@ -432,10 +439,12 @@ __global__ void cdklm_swe_2D(
             }
 
             // by + j + 2 = global thread id + ghost cells
-            const float coriolis_f = f_ + beta_ * ((by + j + 2)-y_zero_reference_cell_ + 0.5f)*dy_;
+            //FIXME: CORIOLIS beta plane
+            const float coriolis_f = f_ + beta_ * ((by + j + 2) + 0.5f)*dy_;
             const float V_constant = dx_*coriolis_f/(2.0f*g_);
 
             // Qx[2] = Kx, which we need to find differently than ux and vx
+            //FIXME: CORIOLIS
             const float backward = theta_*g_*(center_eta - left_eta   - V_constant*(center_v + left_v ) );
             const float central  =   0.5f*g_*(right_eta  - left_eta   - V_constant*(right_v + 2*center_v + left_v) );
             const float forward  = theta_*g_*(right_eta  - center_eta - V_constant*(center_v + right_v) );
@@ -490,7 +499,8 @@ __global__ void cdklm_swe_2D(
                 if (global_thread_id_y > ny_+1) { center_u = -center_u; }
             }
             
-            const float thread_y_diff = by + j - 1 + 2 - y_zero_reference_cell_; // (by + j - 1) + 2 = global cell id + ghost cell
+            const float thread_y_diff = by + j - 1 + 2; // (by + j - 1) + 2 = global cell id + ghost cell
+            //FIXME: CORIOLIS beta plane - change angle
             const float center_coriolis_f = f_ + beta_ * (thread_y_diff        + 0.5f)*dy_;
             const float lower_coriolis_f  = f_ + beta_ * (thread_y_diff - 1.0f + 0.5f)*dy_;
             const float upper_coriolis_f  = f_ + beta_ * (thread_y_diff + 1.0f + 0.5f)*dy_;
@@ -535,6 +545,7 @@ __global__ void cdklm_swe_2D(
         const float RHym = 0.5f*( Hi[ty  ][tx] + Hi[ty  ][tx+1] );
         const float st2 = g_*(R[0][j][i] + Hm)*(RHyp - RHym);
 
+        //FIXME: CORIOLIS
         const float L1  = - flux_diff.x;
         const float L2  = - flux_diff.y + (X + coriolis_f_central*hv + st1/dx_);
         const float L3  = - flux_diff.z + (Y - coriolis_f_central*hu + st2/dy_);
