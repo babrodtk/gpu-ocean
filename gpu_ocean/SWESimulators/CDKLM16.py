@@ -50,7 +50,7 @@ class CDKLM16(Simulator.Simulator):
                  nx, ny, \
                  dx, dy, dt, \
                  g, f, r, \
-                 angle=None, \
+                 angle=np.array([[0]], dtype=np.float32), \
                  t=0.0, \
                  theta=1.3, rk_order=2, \
                  coriolis_beta=0.0, \
@@ -130,7 +130,7 @@ class CDKLM16(Simulator.Simulator):
             y_zero_reference_cell = boundary_conditions.spongeCells[2] + y_zero_reference_cell
             
         #Compensate f for reference cell
-        f = f - coriolis_beta * y_zero_reference_cell * dy
+        f = f - coriolis_beta * y_zero_reference_cell * dy * (np.cos(angle))
         y_zero_reference_cell = 0
         
         A = None
@@ -262,8 +262,6 @@ class CDKLM16(Simulator.Simulator):
                                     
                                     
         #Upload data to GPU and bind to texture reference
-        if (angle is None):
-            angle = np.array([[0]], dtype=np.float32)
         self.angle_texref = self.kernel.get_texref("angle_tex")
         self.angle_texref.set_array(cuda.np_to_array(np.ascontiguousarray(angle), order="C"))
                     

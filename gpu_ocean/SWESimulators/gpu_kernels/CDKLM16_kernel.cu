@@ -336,10 +336,21 @@ __global__ void cdklm_swe_2D(
     // BT = np.array([[cos(theta), sin(theta)], [-sin(theta), cos(theta)]])
     const float4 BT = make_float4(cos_a, sin_a, -sin_a, cos_a);
     
-    // North vector aligned towards y-axis
-    // and east towards x-axis
+    // North and east vector in xy-coordinate system
+    // Given x and y-aligned vectors, simply compute the dot product, 
+    // i.e., 
+    // hu_north = north.x*hu + north.y*hv
+    // hu_east = east.x*hu + east.y*hv
     const float2 north = matMul(BT, make_float2(0.0, 1.0));
     const float2 east = make_float2(north.y, -north.x);
+    
+    //Up vector in east-north coordinate system
+    // Given n and e-aligned vectors, simply compute the dot product,
+    // i.e., 
+    // hu = right.x*hu_north + right.y*hu_east
+    // hv = up.x*hu_north + up.y*hu_east
+    const float2 up = matMul(B, make_float2(0.0, 1.0));
+    const float2 right = make_float2(up.y, -up.x);
 
 
     // theta_ = 1.5f;
@@ -529,7 +540,6 @@ __global__ void cdklm_swe_2D(
             const float center_eta = R[0][l  ][k];
             const float upper_eta  = R[0][l+1][k];
 
-            //FIXME: CORIOLIS
             float lower_u  = R[1][l-1][k];
             float center_u = R[1][l  ][k];
             float upper_u  = R[1][l+1][k];
@@ -612,17 +622,17 @@ __global__ void cdklm_swe_2D(
         const float RHym = 0.5f*( Hi[ty  ][tx] + Hi[ty  ][tx+1] );
         const float st2 = g_*(R[0][j][i] + Hm)*(RHyp - RHym);
 
-        //Find north-going and east-going momentum
-        //FIXME: This is wrong: 
-        const float hu_east = hu*east.x + hv*east.y;
-        const float hv_north = hu*north.x + hv*north.y;
-        //FIXME: Missing: 
-        //hu_east = hu_east + coriolis_f_central*hv_north;
-        //hu = project back to x-y coordinatesystem
-        //Same for hv
+        //Find north-going and east-going coriolis force
+        const float hu_east = -coriolis_f_central*(hu*east.x + hv*east.y);
+        const float hv_north = coriolis_f_central*(hu*north.x + hv*north.y);
+        
+        //Convert back to xy coordinate system
+        const float hu_cor = right.x*hu_east + right.y*hv_north;
+        const float hv_cor = up.x*hu_east + up.y*hv_north;
+        
         const float L1  = - flux_diff.x;
-        const float L2  = - flux_diff.y + (X + coriolis_f_central*hv_north + st1/dx_);
-        const float L3  = - flux_diff.z + (Y - coriolis_f_central*hu_east + st2/dy_);
+        const float L2  = - flux_diff.y + (X + hv_cor + st1/dx_);
+        const float L3  = - flux_diff.z + (Y + hu_cor + st2/dy_);
 
         float* const eta_row = (float*) ((char*) eta1_ptr_ + eta1_pitch_*tj);
         float* const hu_row  = (float*) ((char*) hu1_ptr_  +  hu1_pitch_*tj);
