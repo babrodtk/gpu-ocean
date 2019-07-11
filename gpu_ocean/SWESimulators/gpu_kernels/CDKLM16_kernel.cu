@@ -242,8 +242,8 @@ __global__ void cdklm_swe_2D(
 
         const float theta_,
 
-        const float f_, //< Coriolis coefficient
-        const float beta_, //< Coriolis force f_ + beta_*(y-y0)
+        const float f_, //< Coriolis coefficient (f_ - beta_*y0)
+        const float beta_, //< Coriolis force f_ + beta_*y
 
         const float r_, //< Bottom friction coefficient
 
@@ -350,9 +350,9 @@ __global__ void cdklm_swe_2D(
     //Compute Coriolis terms needed for fluxes etc.
     // Global id should be including the 
     //FIXME CORIOLIS beta plane here
-    const float coriolis_f_lower   = f_ + beta_ * ((by+ty+2) - 1.0f + 0.5f)*dy_;
-    const float coriolis_f_central = f_ + beta_ * ((by+ty+2) +        0.5f)*dy_;
-    const float coriolis_f_upper   = f_ + beta_ * ((by+ty+2) + 1.0f + 0.5f)*dy_;
+    const float coriolis_f_lower   = f_ + beta_ * (tj-0.5f)*dy_;
+    const float coriolis_f_central = f_ + beta_ * (tj+0.5f)*dy_;
+    const float coriolis_f_upper   = f_ + beta_ * (tj+1.5f)*dy_;
 
 
 
@@ -440,7 +440,7 @@ __global__ void cdklm_swe_2D(
 
             // by + j + 2 = global thread id + ghost cells
             //FIXME: CORIOLIS beta plane
-            const float coriolis_f = f_ + beta_ * ((by + j + 2) + 0.5f)*dy_;
+            const float coriolis_f = f_ + beta_ * (by + l + 0.5f)*dy_;
             const float V_constant = dx_*coriolis_f/(2.0f*g_);
 
             // Qx[2] = Kx, which we need to find differently than ux and vx
@@ -499,11 +499,10 @@ __global__ void cdklm_swe_2D(
                 if (global_thread_id_y > ny_+1) { center_u = -center_u; }
             }
             
-            const float thread_y_diff = by + j - 1 + 2; // (by + j - 1) + 2 = global cell id + ghost cell
             //FIXME: CORIOLIS beta plane - change angle
-            const float center_coriolis_f = f_ + beta_ * (thread_y_diff        + 0.5f)*dy_;
-            const float lower_coriolis_f  = f_ + beta_ * (thread_y_diff - 1.0f + 0.5f)*dy_;
-            const float upper_coriolis_f  = f_ + beta_ * (thread_y_diff + 1.0f + 0.5f)*dy_;
+            const float lower_coriolis_f  = f_ + beta_ * (by + l - 0.5f)*dy_;
+            const float center_coriolis_f = f_ + beta_ * (by + l + 0.5f)*dy_;
+            const float upper_coriolis_f  = f_ + beta_ * (by + l + 1.5f)*dy_;
 
             const float lower_fu  = lower_u*lower_coriolis_f;
             const float center_fu = center_u*center_coriolis_f;
