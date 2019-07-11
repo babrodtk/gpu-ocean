@@ -82,8 +82,9 @@ float3 computeFFaceFlux(const int i, const int j, const int bx, const int nx_,
                 float R[3][block_height+4][block_width+4],
                 float Qx[3][block_height+2][block_width+2],
                 float Hi[block_height+1][block_width+1],
-                const float g_, const float coriolis_f, const float dx_,
-                const int& bc_east_, const int& bc_west_) {
+                const float g_, const float coriolis_fm, const float coriolis_fp, const float dx_,
+                const int& bc_east_, const int& bc_west_,
+                const float2 north) {
     const int l = j + 2; //Skip ghost cells (be consistent with reconstruction offsets)
     const int k = i + 1;
 
@@ -111,10 +112,13 @@ float3 computeFFaceFlux(const int i, const int j, const int bx, const int nx_,
     // Fix east boundary for reconstruction of eta (corresponding to Kx)
     if ((bc_east_ == 1) && (bx + i + 2 == nx_+2)) { vp = -vp; }
     
+    //Reconstruct momentum along north
+    const float vp_north = up*north.x + vp*north.y;
+    const float vm_north = um*north.x + vm*north.y;
+    
     // Reconstruct h
-    //FIXME: CORIOLIS
-    const float hp = eta_bar_p + H_face - (Kx_p + dx_*coriolis_f*vp)/(2.0f*g_);
-    const float hm = eta_bar_m + H_face + (Kx_m + dx_*coriolis_f*vm)/(2.0f*g_);
+    const float hp = eta_bar_p + H_face - (Kx_p + dx_*coriolis_fp*vp_north)/(2.0f*g_);
+    const float hm = eta_bar_m + H_face + (Kx_m + dx_*coriolis_fm*vm_north)/(2.0f*g_);
 
     // Our flux variables Q=(h, u, v)
     const float3 Qp = make_float3(hp, Rp.x, Rp.y);
@@ -133,9 +137,11 @@ float3 computeGFaceFlux(const int i, const int j, const int by, const int ny_,
                 float Qy[3][block_height+2][block_width+2],
                 float Hi[block_height+1][block_width+1],
                 const float g_, const float coriolis_fm, const float coriolis_fp, const float dy_,
-                const int& bc_north_, const int& bc_south_) {
+                const int& bc_north_, const int& bc_south_,
+                const float2 east) {
     const int l = j + 1;
     const int k = i + 2; //Skip ghost cells
+    
     // Q at interface from the right and left
     // Variables to reconstruct h from u, v, K, L
     const float eta_bar_p = R[0][l+1][k];
@@ -160,10 +166,13 @@ float3 computeGFaceFlux(const int i, const int j, const int by, const int ny_,
     // Fix north boundary for reconstruction of eta (corresponding to Ly)
     if ((bc_north_ == 1) && (by + j + 2 == ny_+2)) { up = -up; }
     
+    // Reconstruct momentum along east
+    const float up_north = up*east.x + vp*east.y;
+    const float um_north = um*east.x + vm*east.y;
+    
     // Reconstruct h
-    //FIXME: CORIOLIS
-    const float hp = eta_bar_p + H_face - ( Ly_p - dy_*coriolis_fp*up)/(2.0f*g_);
-    const float hm = eta_bar_m + H_face + ( Ly_m - dy_*coriolis_fm*um)/(2.0f*g_);
+    const float hp = eta_bar_p + H_face - ( Ly_p - dy_*coriolis_fp*up_north)/(2.0f*g_);
+    const float hm = eta_bar_m + H_face + ( Ly_m - dy_*coriolis_fm*um_north)/(2.0f*g_);
 
     // Our flux variables Q=(h, v, u)
     // Note that we swap u and v
@@ -329,7 +338,7 @@ __global__ void cdklm_swe_2D(
     
     // North vector aligned towards y-axis
     // and east towards x-axis
-    const float2 north = make_float2(0.0, 1.0);//matMul(B, make_float2(0.0, 1.0));
+    const float2 north = matMul(BT, make_float2(0.0, 1.0));
     const float2 east = make_float2(north.y, -north.x);
 
 
@@ -380,7 +389,8 @@ __global__ void cdklm_swe_2D(
     const float coriolis_f_lower   = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (tj-0.5f)*dy_*north.y);
     const float coriolis_f_central = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (tj+0.5f)*dy_*north.y);
     const float coriolis_f_upper   = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (tj+1.5f)*dy_*north.y);
-
+    const float coriolis_f_left    = f_ + beta_ * ((ti-0.5f)*dx_*north.x + (tj+0.5f)*dy_*north.y);
+    const float coriolis_f_right   = f_ + beta_ * ((ti+1.5f)*dx_*north.x + (tj+0.5f)*dy_*north.y);
 
 
     //Fix boundary conditions
@@ -440,19 +450,19 @@ __global__ void cdklm_swe_2D(
             const float center_eta = R[0][l][k  ];
             const float right_eta  = R[0][l][k+1];
 
-            {
-                const float left_u   = R[1][l][k-1];
-                const float center_u = R[1][l][k  ];
-                const float right_u  = R[1][l][k+1];
-                Qx[0][j][i] = minmodSlope(left_u, center_u, right_u, theta_);
-            }
-
+            const float left_u   = R[1][l][k-1];
+            const float center_u = R[1][l][k  ];
+            const float right_u  = R[1][l][k+1];
+        
             float left_v   = R[2][l][k-1];
             float center_v = R[2][l][k  ];
             float right_v  = R[2][l][k+1];
+            
+            Qx[0][j][i] = minmodSlope(left_u, center_u, right_u, theta_);
             Qx[1][j][i] = minmodSlope(left_v, center_v, right_v, theta_);
             
             // Enforce wall boundary conditions for Kx:
+            //FIXME: Blir ikke dette feil for Qx[1]? Dvs skulle ikke dette vært gjort før slope beregning der?
             int global_thread_id_x = bx + i + 1; // index including ghost cells'
             // Western BC
             if (bc_west == 1) {
@@ -469,9 +479,9 @@ __global__ void cdklm_swe_2D(
             const float center_coriolis_f = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (by + l + 0.5f)*dy_*north.y);
             const float right_coriolis_f  = f_ + beta_ * ((ti+1.5f)*dx_*north.x + (by + l + 0.5f)*dy_*north.y);
             
-            const float left_fv  = left_v*left_coriolis_f;
-            const float center_fv = center_v*center_coriolis_f;
-            const float right_fv  = right_v*right_coriolis_f;
+            const float left_fv  = (north.x*left_u + north.y*left_v)*left_coriolis_f;
+            const float center_fv = (north.x*center_u + north.y*center_v)*center_coriolis_f;
+            const float right_fv  = (north.x*right_u + north.y*right_v)*right_coriolis_f;
             
             const float V_constant = dx_/(2.0f*g_);
 
@@ -488,8 +498,22 @@ __global__ void cdklm_swe_2D(
     __syncthreads();
     
     // Compute flux along x axis
-    float3 flux_diff = (  computeFFaceFlux(tx+1, ty, bx, nx_, R, Qx, Hi,g_, coriolis_f_central, dx_, bc_north, bc_south) 
-                        - computeFFaceFlux(tx  , ty, bx, nx_, R, Qx, Hi,g_, coriolis_f_central, dx_, bc_north, bc_south)) / dx_;
+    float3 flux_diff = (  
+            computeFFaceFlux(
+                tx+1, ty, bx, nx_, 
+                R, Qx, Hi,
+                g_, coriolis_f_central, coriolis_f_right, 
+                dx_, 
+                bc_north, bc_south, 
+                north)
+            - 
+            computeFFaceFlux(
+                tx , ty, bx, nx_, 
+                R, Qx, Hi,
+                g_, coriolis_f_left, coriolis_f_central, 
+                dx_, 
+                bc_north, bc_south, 
+                north)) / dx_;
     __syncthreads();
 
     //Reconstruct slopes along y axis
@@ -505,17 +529,17 @@ __global__ void cdklm_swe_2D(
             const float center_eta = R[0][l  ][k];
             const float upper_eta  = R[0][l+1][k];
 
+            //FIXME: CORIOLIS
             float lower_u  = R[1][l-1][k];
             float center_u = R[1][l  ][k];
             float upper_u  = R[1][l+1][k];
-            Qx[0][j][i] = minmodSlope(lower_u, center_u, upper_u, theta_);
 
-            {
-                const float lower_v  = R[2][l-1][k];
-                const float center_v = R[2][l  ][k];
-                const float upper_v  = R[2][l+1][k];
-                Qx[1][j][i] = minmodSlope(lower_v, center_v, upper_v, theta_);
-            }
+            const float lower_v  = R[2][l-1][k];
+            const float center_v = R[2][l  ][k];
+            const float upper_v  = R[2][l+1][k];
+            
+            Qx[0][j][i] = minmodSlope(lower_u, center_u, upper_u, theta_);
+            Qx[1][j][i] = minmodSlope(lower_v, center_v, upper_v, theta_);
 
             // Enforce wall boundary conditions for Ly
             int global_thread_id_y = by + j + 1; // index including ghost cells
@@ -534,9 +558,9 @@ __global__ void cdklm_swe_2D(
             const float center_coriolis_f = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (by + l + 0.5f)*dy_*north.y);
             const float upper_coriolis_f  = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (by + l + 1.5f)*dy_*north.y);
 
-            const float lower_fu  = lower_u*lower_coriolis_f;
-            const float center_fu = center_u*center_coriolis_f;
-            const float upper_fu  = upper_u*upper_coriolis_f;
+            const float lower_fu  = (east.x*lower_u + east.y*lower_v)*lower_coriolis_f;
+            const float center_fu = (east.x*center_u + east.y*center_v)*center_coriolis_f;
+            const float upper_fu  = (east.x*upper_u + east.y*upper_v)*upper_coriolis_f;
 
             const float U_constant = dy_/(2.0f*g_);
 
@@ -551,8 +575,22 @@ __global__ void cdklm_swe_2D(
     __syncthreads();
 
     //Compute fluxes along the y axis    
-    flux_diff = flux_diff + (  computeGFaceFlux(tx, ty+1, by, ny_, R, Qx, Hi, g_, coriolis_f_central,   coriolis_f_upper, dy_, bc_east, bc_west)
-                             - computeGFaceFlux(tx, ty  , by, ny_, R, Qx, Hi, g_,   coriolis_f_lower, coriolis_f_central, dy_, bc_east, bc_west)) / dy_;
+    flux_diff = flux_diff + 
+        (computeGFaceFlux(
+            tx, ty+1, by, ny_, 
+            R, Qx, Hi, 
+            g_, coriolis_f_central, coriolis_f_upper, 
+            dy_, 
+            bc_east, bc_west, 
+            east)
+        - 
+        computeGFaceFlux(
+            tx, ty, by, ny_, 
+            R, Qx, Hi, 
+            g_, coriolis_f_lower, coriolis_f_central, 
+            dy_, 
+            bc_east, bc_west, 
+            east)) / dy_;
     __syncthreads();
 
 
@@ -574,10 +612,17 @@ __global__ void cdklm_swe_2D(
         const float RHym = 0.5f*( Hi[ty  ][tx] + Hi[ty  ][tx+1] );
         const float st2 = g_*(R[0][j][i] + Hm)*(RHyp - RHym);
 
-        //FIXME: CORIOLIS
+        //Find north-going and east-going momentum
+        //FIXME: This is wrong: 
+        const float hu_east = hu*east.x + hv*east.y;
+        const float hv_north = hu*north.x + hv*north.y;
+        //FIXME: Missing: 
+        //hu_east = hu_east + coriolis_f_central*hv_north;
+        //hu = project back to x-y coordinatesystem
+        //Same for hv
         const float L1  = - flux_diff.x;
-        const float L2  = - flux_diff.y + (X + coriolis_f_central*hv + st1/dx_);
-        const float L3  = - flux_diff.z + (Y - coriolis_f_central*hu + st2/dy_);
+        const float L2  = - flux_diff.y + (X + coriolis_f_central*hv_north + st1/dx_);
+        const float L3  = - flux_diff.z + (Y - coriolis_f_central*hu_east + st2/dy_);
 
         float* const eta_row = (float*) ((char*) eta1_ptr_ + eta1_pitch_*tj);
         float* const hu_row  = (float*) ((char*) hu1_ptr_  +  hu1_pitch_*tj);
