@@ -232,6 +232,18 @@ void handleWallBC(
 }
 
 
+/**
+  * Uses a matrix stored as float 4
+  * [x, y] * [u] = [x*u + y*v]
+  * [z, w]   [v]   [z*u + w*v]
+  * and multiply 
+  */
+__device__
+inline float2 matMul(float4 M, float2 v) {
+    return make_float2(M.x*v.x + M.y*v.y, M.z*v.x + M.w*v.y);
+}
+
+
 texture<float, cudaTextureType2D> angle_tex;
 
 extern "C" {
@@ -283,10 +295,6 @@ __global__ void cdklm_swe_2D(
     //Index of cell within domain
     const int ti = blockIdx.x * blockDim.x + threadIdx.x + 2; //Skip global ghost cells, i.e., +2
     const int tj = blockIdx.y * blockDim.y + threadIdx.y + 2;
-    
-    const float s = ti / (float) nx_;
-    const float t = tj / (float) ny_;
-    const float angle = tex2D(angle_tex, s, t);
 
     // Our physical variables
     // Input is [eta, hu, hv]
@@ -304,6 +312,25 @@ __global__ void cdklm_swe_2D(
     // Bathymetry
     __shared__ float  Hi[block_height+1][block_width+1];
 
+    // Get the angle towards north and create the matrices for the basis transformation
+    const float s = ti / (float) nx_;
+    const float t = tj / (float) ny_;
+    const float angle = tex2D(angle_tex, s, t);
+    const float cos_a = cosf(angle);
+    const float sin_a = sinf(angle);
+    
+    // B transforms from [x, y] to [n, e] (rotates by theta)
+    // B = np.array([[cos(theta), -sin(theta)], [sin(theta), cos(theta)]])
+    const float4 B = make_float4(cos_a, -sin_a, sin_a, cos_a);
+    
+    // BT transforms from [e, n] to [x, y] (rotates by -theta)
+    // BT = np.array([[cos(theta), sin(theta)], [-sin(theta), cos(theta)]])
+    const float4 BT = make_float4(cos_a, sin_a, -sin_a, cos_a);
+    
+    // North vector aligned towards y-axis
+    // and east towards x-axis
+    const float2 north = make_float2(0.0, 1.0);//matMul(B, make_float2(0.0, 1.0));
+    const float2 east = make_float2(north.y, -north.x);
 
 
     // theta_ = 1.5f;
@@ -349,10 +376,10 @@ __global__ void cdklm_swe_2D(
     
     //Compute Coriolis terms needed for fluxes etc.
     // Global id should be including the 
-    //FIXME CORIOLIS beta plane here
-    const float coriolis_f_lower   = f_ + beta_ * (tj-0.5f)*dy_;
-    const float coriolis_f_central = f_ + beta_ * (tj+0.5f)*dy_;
-    const float coriolis_f_upper   = f_ + beta_ * (tj+1.5f)*dy_;
+    //beta * (i*dx, j*dy)*(north.x, north.y)
+    const float coriolis_f_lower   = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (tj-0.5f)*dy_*north.y);
+    const float coriolis_f_central = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (tj+0.5f)*dy_*north.y);
+    const float coriolis_f_upper   = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (tj+1.5f)*dy_*north.y);
 
 
 
@@ -438,16 +465,20 @@ __global__ void cdklm_swe_2D(
                 if (global_thread_id_x > nx_+1) { center_v = -center_v; }
             }
 
-            // by + j + 2 = global thread id + ghost cells
-            //FIXME: CORIOLIS beta plane
-            const float coriolis_f = f_ + beta_ * (by + l + 0.5f)*dy_;
-            const float V_constant = dx_*coriolis_f/(2.0f*g_);
+            const float left_coriolis_f   = f_ + beta_ * ((ti-0.5f)*dx_*north.x + (by + l + 0.5f)*dy_*north.y);
+            const float center_coriolis_f = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (by + l + 0.5f)*dy_*north.y);
+            const float right_coriolis_f  = f_ + beta_ * ((ti+1.5f)*dx_*north.x + (by + l + 0.5f)*dy_*north.y);
+            
+            const float left_fv  = left_v*left_coriolis_f;
+            const float center_fv = center_v*center_coriolis_f;
+            const float right_fv  = right_v*right_coriolis_f;
+            
+            const float V_constant = dx_/(2.0f*g_);
 
             // Qx[2] = Kx, which we need to find differently than ux and vx
-            //FIXME: CORIOLIS
-            const float backward = theta_*g_*(center_eta - left_eta   - V_constant*(center_v + left_v ) );
-            const float central  =   0.5f*g_*(right_eta  - left_eta   - V_constant*(right_v + 2*center_v + left_v) );
-            const float forward  = theta_*g_*(right_eta  - center_eta - V_constant*(center_v + right_v) );
+            const float backward = theta_*g_*(center_eta - left_eta   - V_constant*(center_fv + left_fv ) );
+            const float central  =   0.5f*g_*(right_eta  - left_eta   - V_constant*(right_fv + 2*center_fv + left_fv) );
+            const float forward  = theta_*g_*(right_eta  - center_eta - V_constant*(center_fv + right_fv) );
 
             // Qx[2] is really dx*Kx
             Qx[2][j][i] = minmodRaw(backward, central, forward);
@@ -499,10 +530,9 @@ __global__ void cdklm_swe_2D(
                 if (global_thread_id_y > ny_+1) { center_u = -center_u; }
             }
             
-            //FIXME: CORIOLIS beta plane - change angle
-            const float lower_coriolis_f  = f_ + beta_ * (by + l - 0.5f)*dy_;
-            const float center_coriolis_f = f_ + beta_ * (by + l + 0.5f)*dy_;
-            const float upper_coriolis_f  = f_ + beta_ * (by + l + 1.5f)*dy_;
+            const float lower_coriolis_f  = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (by + l - 0.5f)*dy_*north.y);
+            const float center_coriolis_f = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (by + l + 0.5f)*dy_*north.y);
+            const float upper_coriolis_f  = f_ + beta_ * ((ti+0.5f)*dx_*north.x + (by + l + 1.5f)*dy_*north.y);
 
             const float lower_fu  = lower_u*lower_coriolis_f;
             const float center_fu = center_u*center_coriolis_f;
