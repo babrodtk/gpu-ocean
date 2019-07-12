@@ -130,7 +130,7 @@ class CDKLM16(Simulator.Simulator):
             y_zero_reference_cell = boundary_conditions.spongeCells[2] + y_zero_reference_cell
             
         #Compensate f for reference cell
-        f = f - coriolis_beta * y_zero_reference_cell * dy * (np.cos(angle))
+        f = f - coriolis_beta * y_zero_reference_cell * dy
         y_zero_reference_cell = 0
         
         A = None
@@ -263,7 +263,7 @@ class CDKLM16(Simulator.Simulator):
                                     
         #Upload data to GPU and bind to texture reference
         self.angle_texref = self.kernel.get_texref("angle_tex")
-        self.angle_texref.set_array(cuda.np_to_array(np.ascontiguousarray(angle), order="C"))
+        self.angle_texref.set_array(cuda.np_to_array(np.ascontiguousarray(angle, dtype=np.float32), order="C"))
                     
         # Set texture parameters
         self.angle_texref.set_filter_mode(cuda.filter_mode.LINEAR) #bilinear interpolation
@@ -503,7 +503,7 @@ class CDKLM16(Simulator.Simulator):
         boundary_conditions = boundary_conditions | np.int8(self.boundary_conditions.south) << 16
         boundary_conditions = boundary_conditions | np.int8(self.boundary_conditions.east) << 8
         boundary_conditions = boundary_conditions | np.int8(self.boundary_conditions.west) << 0
-            
+
         self.cdklm_swe_2D.prepared_async_call(self.global_size, self.local_size, self.gpu_stream, \
                            self.nx, self.ny, \
                            self.dx, self.dy, local_dt, \

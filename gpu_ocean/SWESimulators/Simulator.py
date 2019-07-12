@@ -340,6 +340,5 @@ class Simulator(object):
         if (self.boundary_conditions.isSponge()):
             self.interior_domain_indices = self.boundary_conditions.spongeCells.copy()
             self.interior_domain_indices[0:2] = -self.interior_domain_indices[0:2]
-            print("self.interior_domain_indices: " + str(self.interior_domain_indices))
     
     

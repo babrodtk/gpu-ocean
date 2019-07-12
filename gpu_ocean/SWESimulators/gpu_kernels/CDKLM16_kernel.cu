@@ -623,7 +623,7 @@ __global__ void cdklm_swe_2D(
         const float st2 = g_*(R[0][j][i] + Hm)*(RHyp - RHym);
 
         //Find north-going and east-going coriolis force
-        const float hu_east = -coriolis_f_central*(hu*east.x + hv*east.y);
+        const float hu_east =  coriolis_f_central*(hu*east.x + hv*east.y);
         const float hv_north = coriolis_f_central*(hu*north.x + hv*north.y);
         
         //Convert back to xy coordinate system
@@ -632,7 +632,7 @@ __global__ void cdklm_swe_2D(
         
         const float L1  = - flux_diff.x;
         const float L2  = - flux_diff.y + (X + hv_cor + st1/dx_);
-        const float L3  = - flux_diff.z + (Y + hu_cor + st2/dy_);
+        const float L3  = - flux_diff.z + (Y - hu_cor + st2/dy_);
 
         float* const eta_row = (float*) ((char*) eta1_ptr_ + eta1_pitch_*tj);
         float* const hu_row  = (float*) ((char*) hu1_ptr_  +  hu1_pitch_*tj);
